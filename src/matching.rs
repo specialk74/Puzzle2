@@ -428,49 +428,48 @@ pub fn piece_id_from_key(key: &str) -> String {
     key.rsplitn(2, '-').last().unwrap_or(key).to_string()
 }
 
-/// Confirm that piece_a connects to piece_b, working side by side.
+/// Applica la logica di conferma utente per la coppia (piece_a, piece_b).
 ///
-/// For each side of piece_a that has at least one match to piece_b:
-///   keep only the matches to piece_b for that side (remove matches to other pieces).
-/// For sides of piece_a with no match to piece_b: leave untouched.
-/// Same logic applied symmetrically to piece_b's sides.
+/// Per ciascun pezzo:
+///   - Se il partner compare in esattamente 1 lato → rimuovere le altre opzioni per quel lato.
+///   - Se il partner compare in più lati → non modificare output (il bold sarà solo nel display).
+///   - Se il partner non compare in nessun lato → nessuna modifica.
 ///
-/// Returns false (and does nothing) if no association between the two exists at all.
-pub fn confirm_pair(output: &mut OutputMatches, piece_a: &str, piece_b: &str) -> bool {
-    let exists = output.matches.iter().any(|(from_key, matches)| {
-        let fp = piece_id_from_key(from_key);
-        (fp == piece_a && matches.iter().any(|m| piece_id_from_key(&m.to_key) == piece_b))
-            || (fp == piece_b && matches.iter().any(|m| piece_id_from_key(&m.to_key) == piece_a))
-    });
+/// Ritorna true se almeno un lato di uno dei due pezzi conosce l'altro.
+pub fn apply_user_pair(output: &mut OutputMatches, piece_a: &str, piece_b: &str) -> bool {
+    let sides_a: Vec<String> = output.matches.keys()
+        .filter(|k| piece_id_from_key(k) == piece_a)
+        .filter(|k| output.matches[*k].iter().any(|m| piece_id_from_key(&m.to_key) == piece_b))
+        .cloned()
+        .collect();
 
-    if !exists {
+    let sides_b: Vec<String> = output.matches.keys()
+        .filter(|k| piece_id_from_key(k) == piece_b)
+        .filter(|k| output.matches[*k].iter().any(|m| piece_id_from_key(&m.to_key) == piece_a))
+        .cloned()
+        .collect();
+
+    if sides_a.is_empty() && sides_b.is_empty() {
         return false;
     }
 
-    let keys: Vec<String> = output.matches.keys().cloned().collect();
-    for key in &keys {
-        let fp = piece_id_from_key(key);
-        if fp != piece_a && fp != piece_b {
-            continue;
+    if sides_a.len() == 1 {
+        let key = sides_a[0].clone();
+        if let Some(v) = output.matches.get_mut(&key) {
+            v.retain(|m| piece_id_from_key(&m.to_key) == piece_b);
         }
-        let partner = if fp == piece_a { piece_b } else { piece_a };
-
-        // Only modify this side if it has at least one match to the partner piece.
-        let has_match_to_partner = output
-            .matches
-            .get(key.as_str())
-            .map(|v| v.iter().any(|m| piece_id_from_key(&m.to_key) == partner))
-            .unwrap_or(false);
-
-        if !has_match_to_partner {
-            continue;
+        if output.matches.get(&key).map(|v| v.is_empty()).unwrap_or(false) {
+            output.matches.remove(&key);
         }
+    }
 
-        if let Some(v) = output.matches.get_mut(key.as_str()) {
-            v.retain(|m| piece_id_from_key(&m.to_key) == partner);
+    if sides_b.len() == 1 {
+        let key = sides_b[0].clone();
+        if let Some(v) = output.matches.get_mut(&key) {
+            v.retain(|m| piece_id_from_key(&m.to_key) == piece_a);
         }
-        if output.matches.get(key.as_str()).map(|v| v.is_empty()).unwrap_or(false) {
-            output.matches.remove(key.as_str());
+        if output.matches.get(&key).map(|v| v.is_empty()).unwrap_or(false) {
+            output.matches.remove(&key);
         }
     }
 

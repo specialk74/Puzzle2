@@ -3,7 +3,7 @@ use image::{DynamicImage, RgbImage};
 use log::{debug, info};
 use std::path::{Path, PathBuf};
 
-use crate::models::{OutputMatches, PieceDescriptor};
+use crate::models::{OutputMatches, PieceDescriptor, UserPairs};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Piece descriptor (per-piece JSON)
@@ -122,6 +122,32 @@ pub fn save_debug_image(
     Ok(())
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// User pairs (user.json)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Salva le coppie confermate dall'utente in <output_dir>/user.json
+pub fn save_user_pairs(pairs: &UserPairs, output_dir: &Path) -> Result<()> {
+    let path = output_dir.join("user.json");
+    let json = serde_json::to_string_pretty(pairs)
+        .context("Failed to serialise user pairs")?;
+    std::fs::write(&path, json)
+        .with_context(|| format!("Failed to write user.json to {}", path.display()))?;
+    debug!("Saved user.json to {}", path.display());
+    Ok(())
+}
+
+/// Carica le coppie confermate da <output_dir>/user.json — ritorna vuoto se non esiste.
+pub fn load_user_pairs(output_dir: &Path) -> Result<UserPairs> {
+    let path = output_dir.join("user.json");
+    if !path.exists() {
+        return Ok(UserPairs::default());
+    }
+    let json = std::fs::read_to_string(&path)
+        .with_context(|| format!("Failed to read user.json from {}", path.display()))?;
+    serde_json::from_str(&json).context("Failed to parse user.json")
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Output formatting for human-readable display

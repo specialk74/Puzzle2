@@ -270,8 +270,24 @@ fn main() -> Result<()> {
     info!("  Done! Results in {}", cli.output.display());
     info!("═══════════════════════════════════════════════════");
 
+    // ── Replay coppie utente da user.json ────────────────────────────────────
+    info!("─── Replay coppie utente ───");
+    let user_pairs = io::load_user_pairs(&cli.output)?;
+    let mut replay_changed = false;
+    for (pa, pb) in &user_pairs.confirmed_pairs {
+        if matching::apply_user_pair(&mut existing_matches, pa, pb) {
+            info!("Replayed pair: {} ↔ {}", pa, pb);
+            replay_changed = true;
+        } else {
+            warn!("Coppia {} ↔ {} non trovata nei match correnti, ignorata", pa, pb);
+        }
+    }
+    if replay_changed {
+        io::save_output_matches(&existing_matches, &cli.output)?;
+    }
+
     // ── Phase 6: Interactive confirmation ───────────────────────────────────
-    interactive_loop(&cli.output)?;
+    interactive_loop(&cli.output, user_pairs)?;
 
     Ok(())
 }
@@ -280,20 +296,20 @@ fn main() -> Result<()> {
 // Interactive confirmation loop
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn interactive_loop(output_dir: &Path) -> Result<()> {
+fn interactive_loop(output_dir: &Path, user_pairs: models::UserPairs) -> Result<()> {
     use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 
     println!("─── Interactive confirmation ───");
-    println!("Enter two piece numbers to confirm a match (e.g. '1 2'). Press Esc to exit.");
+    println!("Enter a number to inspect a piece, or two numbers to confirm a match (e.g. '1 2'). Press Esc to exit.");
 
     enable_raw_mode()?;
-    let result = run_interactive_loop(output_dir);
+    let result = run_interactive_loop(output_dir, user_pairs);
     disable_raw_mode()?;
     println!();
     result
 }
 
-fn run_interactive_loop(output_dir: &Path) -> Result<()> {
+fn run_interactive_loop(output_dir: &Path, mut user_pairs: models::UserPairs) -> Result<()> {
     use crossterm::cursor;
     use crossterm::event::{read, Event, KeyCode};
     use crossterm::execute;
@@ -303,7 +319,6 @@ fn run_interactive_loop(output_dir: &Path) -> Result<()> {
     let mut buf = String::new();
 
     loop {
-        // Redraw prompt on current line
         execute!(
             stdout(),
             cursor::MoveToColumn(0),
@@ -327,76 +342,13 @@ fn run_interactive_loop(output_dir: &Path) -> Result<()> {
                         buf.trim().split_whitespace().map(str::to_owned).collect();
                     buf.clear();
 
+                    // ── Singolo numero: mostra info pezzo ────────────────────
                     if parts.len() == 1 {
                         match parts[0].parse::<u32>() {
                             Ok(a) => {
-                                let piece_a = format!("{:06}", a);
+                                let piece_id = format!("{:06}", a);
                                 let output_matches = io::load_output_matches(output_dir)?;
-                                let descriptor = io::load_piece_descriptor(&piece_a, output_dir)?;
-                                print!("\r\n");
-
-                                // Build a map side_idx → targets from matches
-                                let mut targets_by_idx: std::collections::BTreeMap<u8, Vec<String>> =
-                                    std::collections::BTreeMap::new();
-                                for (k, v) in output_matches.matches.iter() {
-                                    if matching::piece_id_from_key(k) != piece_a {
-                                        continue;
-                                    }
-                                    let side_idx: u8 = k
-                                        .rsplitn(2, '-')
-                                        .next()
-                                        .and_then(|s| s.parse().ok())
-                                        .unwrap_or(0);
-                                    let nums: Vec<String> = v
-                                        .iter()
-                                        .map(|m| {
-                                            let pid = matching::piece_id_from_key(&m.to_key);
-                                            let n: u32 = pid
-                                                .trim_start_matches('0')
-                                                .parse()
-                                                .unwrap_or(0);
-                                            n.to_string()
-                                        })
-                                        .collect();
-                                    targets_by_idx.insert(side_idx, nums);
-                                }
-
-                                // Short label for SideType
-                                let type_label = |st: &models::SideType| match st {
-                                    models::SideType::ConcaveInward => "Hole",
-                                    models::SideType::ConcaveOutward => "Tab",
-                                    models::SideType::Linear => "Linear",
-                                };
-
-                                print!("Piece {}:\r\n", a);
-
-                                if let Some(desc) = &descriptor {
-                                    // Show all 4 sides with type; "0" if no connections
-                                    for side in &desc.sides {
-                                        let name = models::side_name(side.index);
-                                        let label = type_label(&side.side_type);
-                                        match targets_by_idx.get(&side.index) {
-                                            Some(ts) => print!(
-                                                "  {}({}) → {}\r\n",
-                                                name,
-                                                label,
-                                                ts.join(", ")
-                                            ),
-                                            None => print!("  {}({}) → 0\r\n", name, label),
-                                        }
-                                    }
-                                } else {
-                                    // No descriptor — fall back: only sides with matches
-                                    if targets_by_idx.is_empty() {
-                                        print!("  (no connections)\r\n");
-                                    }
-                                    for (idx, ts) in &targets_by_idx {
-                                        let name = models::side_name(*idx);
-                                        print!("  {} → {}\r\n", name, ts.join(", "));
-                                    }
-                                }
-
-                                stdout().flush()?;
+                                print_piece_info(&output_matches, &piece_id, &user_pairs, output_dir)?;
                             }
                             Err(_) => {
                                 print!("Invalid number.\r\n");
@@ -414,23 +366,27 @@ fn run_interactive_loop(output_dir: &Path) -> Result<()> {
                         continue;
                     }
 
+                    // ── Due numeri: conferma coppia ───────────────────────────
                     match (parts[0].parse::<u32>(), parts[1].parse::<u32>()) {
                         (Ok(a), Ok(b)) => {
                             let piece_a = format!("{:06}", a);
                             let piece_b = format!("{:06}", b);
 
-                            let mut matches = io::load_output_matches(output_dir)?;
-                            if matching::confirm_pair(&mut matches, &piece_a, &piece_b) {
-                                io::save_output_matches(&matches, output_dir)?;
-                                print!("Confirmed: {} ↔ {}\r\n", piece_a, piece_b);
+                            let mut output_matches = io::load_output_matches(output_dir)?;
+                            if matching::apply_user_pair(&mut output_matches, &piece_a, &piece_b) {
+                                io::save_output_matches(&output_matches, output_dir)?;
+                                user_pairs.add(&piece_a, &piece_b);
+                                io::save_user_pairs(&user_pairs, output_dir)?;
                                 info!("Confirmed pair: {} ↔ {}", piece_a, piece_b);
+                                print_piece_info(&output_matches, &piece_a, &user_pairs, output_dir)?;
+                                print_piece_info(&output_matches, &piece_b, &user_pairs, output_dir)?;
                             } else {
                                 print!(
                                     "No association found between {} and {}.\r\n",
                                     piece_a, piece_b
                                 );
+                                stdout().flush()?;
                             }
-                            stdout().flush()?;
                         }
                         _ => {
                             print!("Invalid input: expected two integers.\r\n");
@@ -453,5 +409,74 @@ fn run_interactive_loop(output_dir: &Path) -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+fn print_piece_info(
+    output_matches: &models::OutputMatches,
+    piece_id: &str,
+    user_pairs: &models::UserPairs,
+    output_dir: &Path,
+) -> Result<()> {
+    use std::io::Write;
+
+    let n: u32 = piece_id.trim_start_matches('0').parse().unwrap_or(0);
+    let descriptor = io::load_piece_descriptor(piece_id, output_dir)?;
+
+    // Mappa side_idx → lista di stringhe (con ANSI bold per i confermati)
+    let mut targets_by_idx: std::collections::BTreeMap<u8, Vec<String>> =
+        std::collections::BTreeMap::new();
+    for (k, v) in output_matches.matches.iter() {
+        if matching::piece_id_from_key(k) != piece_id {
+            continue;
+        }
+        let side_idx: u8 = k
+            .rsplitn(2, '-')
+            .next()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        let nums: Vec<String> = v
+            .iter()
+            .map(|m| {
+                let pid = matching::piece_id_from_key(&m.to_key);
+                let num: u32 = pid.trim_start_matches('0').parse().unwrap_or(0);
+                if user_pairs.contains(piece_id, &pid) {
+                    format!("\x1b[1m{}\x1b[0m", num)
+                } else {
+                    num.to_string()
+                }
+            })
+            .collect();
+        targets_by_idx.insert(side_idx, nums);
+    }
+
+    let type_label = |st: &models::SideType| match st {
+        models::SideType::ConcaveInward => "Hole",
+        models::SideType::ConcaveOutward => "Tab",
+        models::SideType::Linear => "Linear",
+    };
+
+    print!("\r\nPiece {}:\r\n", n);
+
+    if let Some(desc) = &descriptor {
+        for side in &desc.sides {
+            let name = models::side_name(side.index);
+            let label = type_label(&side.side_type);
+            match targets_by_idx.get(&side.index) {
+                Some(ts) => print!("  {}({}) → {}\r\n", name, label, ts.join(", ")),
+                None => print!("  {}({}) → 0\r\n", name, label),
+            }
+        }
+    } else {
+        if targets_by_idx.is_empty() {
+            print!("  (no connections)\r\n");
+        }
+        for (idx, ts) in &targets_by_idx {
+            let name = models::side_name(*idx);
+            print!("  {} → {}\r\n", name, ts.join(", "));
+        }
+    }
+
+    std::io::stdout().flush()?;
     Ok(())
 }

@@ -208,3 +208,30 @@ impl Default for MatchWeights {
         }
     }
 }
+
+/// Coppie di pezzi confermate dall'utente, persistite in user.json.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct UserPairs {
+    pub confirmed_pairs: Vec<(String, String)>,
+}
+
+impl UserPairs {
+    /// Ritorna true se la coppia è già presente (in qualsiasi ordine).
+    pub fn contains(&self, piece_a: &str, piece_b: &str) -> bool {
+        self.confirmed_pairs.iter().any(|(a, b)| {
+            (a == piece_a && b == piece_b) || (a == piece_b && b == piece_a)
+        })
+    }
+
+    /// Aggiunge la coppia in forma canonica (ordinata) se non è già presente.
+    pub fn add(&mut self, piece_a: &str, piece_b: &str) {
+        if !self.contains(piece_a, piece_b) {
+            let (a, b) = if piece_a <= piece_b {
+                (piece_a.to_string(), piece_b.to_string())
+            } else {
+                (piece_b.to_string(), piece_a.to_string())
+            };
+            self.confirmed_pairs.push((a, b));
+        }
+    }
+}
