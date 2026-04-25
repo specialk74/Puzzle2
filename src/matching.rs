@@ -103,27 +103,20 @@ pub fn compute_matches(
         }
     }
 
-    // Apply the cross-piece exclusion rule:
-    // If A-sideX is matched with B-sideY, no other side of A can match any side of B.
-    apply_exclusion_rule(&mut result);
-
     result
 }
 
 /// Merge new matches into existing ones, keeping the highest scores.
-/// Also removes entries that are now superseded by exclusion rules.
 pub fn merge_matches(existing: &mut OutputMatches, new: OutputMatches) {
     for (key, new_matches) in new.matches {
         let entry = existing.matches.entry(key).or_default();
         for m in new_matches {
-            // Add if not already present
             if !entry.iter().any(|e| e.to_key == m.to_key) {
                 entry.push(m);
             }
         }
         entry.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
     }
-    apply_exclusion_rule(existing);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -376,53 +369,6 @@ fn similarity_ratio(a: f64, b: f64) -> f64 {
     (min / max).clamp(0.0, 1.0)
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Cross-piece exclusion rule
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// If piece A–sideX is matched with piece B–sideY, no other side of A can match
-/// any side of B. Remove any such conflicting entries.
-fn apply_exclusion_rule(output: &mut OutputMatches) {
-    // Build a set of committed piece-pair exclusions from the best (first) match of each side.
-    // "Best match" = first entry (already sorted by score desc).
-    let mut excluded_pairs: std::collections::HashSet<(String, String)> =
-        std::collections::HashSet::new();
-
-    for (from_key, matches) in &output.matches {
-        if let Some(best) = matches.first() {
-            let from_piece = piece_id_from_key(from_key);
-            let to_piece = piece_id_from_key(&best.to_key);
-            // Exclude in both directions
-            let pair = canonical_pair(&from_piece, &to_piece);
-            excluded_pairs.insert(pair);
-        }
-    }
-
-    // Now remove any match that would violate a different side of the same piece-pair
-    let keys: Vec<String> = output.matches.keys().cloned().collect();
-    for from_key in &keys {
-        let from_piece = piece_id_from_key(from_key);
-        if let Some(matches) = output.matches.get_mut(from_key) {
-            // The best match defines the committed pair
-            if let Some(best) = matches.first().cloned() {
-                let committed_to_piece = piece_id_from_key(&best.to_key);
-                // Remove other matches that point to pieces that are excluded
-                matches.retain(|m| {
-                    let to_piece = piece_id_from_key(&m.to_key);
-                    if to_piece == committed_to_piece {
-                        // Same piece as committed → keep only the best (first)
-                        m.to_key == best.to_key
-                    } else {
-                        // Different piece — check if this pair is excluded
-                        let pair = canonical_pair(&from_piece, &to_piece);
-                        !excluded_pairs.contains(&pair)
-                    }
-                });
-            }
-        }
-    }
-}
-
 pub fn piece_id_from_key(key: &str) -> String {
     // key format: "000001-2"  → piece id "000001"
     key.rsplitn(2, '-').last().unwrap_or(key).to_string()
@@ -476,10 +422,12 @@ pub fn apply_user_pair(output: &mut OutputMatches, piece_a: &str, piece_b: &str)
     true
 }
 
-fn canonical_pair(a: &str, b: &str) -> (String, String) {
-    if a <= b {
-        (a.to_string(), b.to_string())
-    } else {
-        (b.to_string(), a.to_string())
-    }
+/// Ritorna true se il match da `from_key` verso `to_key` è reciproco:
+/// cioè se `to_key` ha a sua volta un match verso `from_key`.
+pub fn is_mutual(output: &OutputMatches, from_key: &str, to_key: &str) -> bool {
+    output
+        .matches
+        .get(to_key)
+        .map(|v| v.iter().any(|m| m.to_key == from_key))
+        .unwrap_or(false)
 }

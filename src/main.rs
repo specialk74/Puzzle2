@@ -435,15 +435,32 @@ fn print_piece_info(
             .next()
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
-        let nums: Vec<String> = v
+        // Deduplica per numero pezzo: accumula i flag di stile con OR
+        let mut seen: std::collections::HashMap<u32, (bool, bool)> =
+            std::collections::HashMap::new();
+        let mut order: Vec<u32> = Vec::new();
+        for m in v.iter() {
+            let pid = matching::piece_id_from_key(&m.to_key);
+            let num: u32 = pid.trim_start_matches('0').parse().unwrap_or(0);
+            let confirmed = user_pairs.contains(piece_id, &pid);
+            let mutual = matching::is_mutual(output_matches, k, &m.to_key);
+            if let Some(entry) = seen.get_mut(&num) {
+                entry.0 |= confirmed;
+                entry.1 |= mutual;
+            } else {
+                seen.insert(num, (confirmed, mutual));
+                order.push(num);
+            }
+        }
+        let nums: Vec<String> = order
             .iter()
-            .map(|m| {
-                let pid = matching::piece_id_from_key(&m.to_key);
-                let num: u32 = pid.trim_start_matches('0').parse().unwrap_or(0);
-                if user_pairs.contains(piece_id, &pid) {
-                    format!("\x1b[1m{}\x1b[0m", num)
-                } else {
-                    num.to_string()
+            .map(|num| {
+                let (confirmed, mutual) = seen[num];
+                match (confirmed, mutual) {
+                    (true, true)  => format!("\x1b[1m\x1b[4m{}\x1b[0m", num),
+                    (true, false) => format!("\x1b[1m{}\x1b[0m", num),
+                    (false, true) => format!("\x1b[4m{}\x1b[0m", num),
+                    (false, false) => num.to_string(),
                 }
             })
             .collect();
