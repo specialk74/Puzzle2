@@ -1,5 +1,4 @@
 use log::{debug, info};
-use std::collections::HashMap;
 
 use crate::models::*;
 
@@ -22,9 +21,6 @@ pub fn compute_matches(
     threshold: f64,
 ) -> OutputMatches {
     let mut result = OutputMatches::default();
-
-    // Build a lookup: piece_id → piece
-    let _: HashMap<&str, &PieceDescriptor> = pieces.iter().map(|p| (p.id.as_str(), p)).collect();
 
     // Collect all non-linear sides as (piece_id, side_index, side_ref)
     let candidates: Vec<(&str, SideIndex, &PieceSide)> = pieces

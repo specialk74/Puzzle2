@@ -9,11 +9,8 @@ use opencv::{
 
 use crate::models::*;
 
-/// Intermediate results from corner detection, used for debug images.
 struct CornerDetectResult {
     corners: Vec<Point>,
-    hull: Vec<Point>,
-    quad: Vec<Point>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -57,9 +54,6 @@ pub fn analyse_piece(
         largest_contour_cv(&binary_mat).context("No contour found – is the image empty?")?;
     debug!("[{}] Contour has {} points", id, contour.len());
 
-    // Debug image 4: contour drawn on original image (disabled)
-    let _ = render_step4_contour(&img.to_rgb8(), &contour);
-
     // 5. Compute bounding box and centroid from the contour
     let (bbox_x, bbox_y, bbox_w, bbox_h) = bounding_box(&contour);
     let centroid = contour_centroid(&contour);
@@ -68,26 +62,14 @@ pub fn analyse_piece(
         id, bbox_x, bbox_y, bbox_w, bbox_h, centroid.x, centroid.y
     );
 
-    // Debug image 5: bounding box + centroid (disabled)
-    let _ = render_step5_bbox_centroid(&img.to_rgb8(), bbox_x, bbox_y, bbox_w, bbox_h, &centroid);
-
     // 6. Detect the four corners of the piece
     info!("[{}] Detecting corners", id);
-    let corner_result = find_corners(&centroid, &blurred_mat, &contour)
+    let corner_result = find_corners(&centroid, &blurred_mat)
         .context("Could not detect 4 corners for this piece")?;
     let corners = corner_result.corners;
     for (i, c) in corners.iter().enumerate() {
         debug!("[{}] Corner[{}] = ({:.1}, {:.1})", id, i, c.x, c.y);
     }
-
-    // Debug image 6: convex hull + simplified quad + snapped corners
-    // let step6_img = render_step6_corners(
-    //     &img.to_rgb8(),
-    //     &corner_result.hull,
-    //     &corner_result.quad,
-    //     &corners,
-    // );
-    // io::save_debug_image(&step6_img, path, &format!("{}_6.jpg", id))?;
 
     // 7. Split contour into 4 sides using the detected corners
     info!("[{}] Splitting contour into 4 sides", id);
@@ -108,10 +90,6 @@ pub fn analyse_piece(
             }
         );
     }
-
-    // Debug image 7: 4 sides drawn in different colours
-    // let step7_img = render_step7_sides(&img.to_rgb8(), &sides, &contour, &corners);
-    // io::save_debug_image(&step7_img, path, &format!("{}_7.jpg", id))?;
 
     Ok(PieceDescriptor {
         id: id.to_string(),
@@ -136,9 +114,8 @@ pub fn analyse_piece(
 /// into the correct h × w matrix with the same data layout, and `try_clone`
 /// gives us an owned copy independent of the slice lifetime.
 fn gray_to_mat(img: &GrayImage) -> Result<Mat> {
-    let (w, h) = img.dimensions();
+    let (_, h) = img.dimensions();
     let data = img.as_raw();
-    let _ = w; // used implicitly through the reshape
     let flat = Mat::from_slice(data.as_slice())?;
     let mat = flat.reshape(1, h as i32)?.try_clone()?;
     Ok(mat)
@@ -197,25 +174,6 @@ fn approx_poly_dp_cv(pts: &[Point], epsilon: f64) -> Result<Vec<Point>> {
         .collect())
 }
 
-/// Convex hull via OpenCV `convexHull`.
-fn convex_hull_cv(pts: &[Point]) -> Result<Vec<Point>> {
-    if pts.len() < 3 {
-        return Ok(pts.to_vec());
-    }
-    let cv_pts: Vector<Point2f> = pts
-        .iter()
-        .map(|p| Point2f::new(p.x as f32, p.y as f32))
-        .collect();
-    let mut hull: Vector<Point2f> = Vector::new();
-    // clockwise=false → CCW hull (standard math orientation);
-    // return_points=true → get actual Point2f values back.
-    imgproc::convex_hull(&cv_pts, &mut hull, false, true)?;
-    Ok(hull
-        .iter()
-        .map(|p| Point::new(p.x as f64, p.y as f64))
-        .collect())
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // CW normalisation
 // ─────────────────────────────────────────────────────────────────────────────
@@ -268,7 +226,7 @@ fn contour_centroid(contour: &[Point]) -> Point {
     Point::new(sx / n, sy / n)
 }
 
-pub fn find_corners(center: &Point, phase: &Mat, contour: &[Point]) -> Result<CornerDetectResult> {
+fn find_corners(center: &Point, phase: &Mat) -> Result<CornerDetectResult> {
     let max_corners = 4;
     let quality_level = 0.1;
     let use_harris_detector = true;
@@ -309,14 +267,6 @@ pub fn find_corners(center: &Point, phase: &Mat, contour: &[Point]) -> Result<Co
                     max_tot_distance = tot_distance;
                 }
             }
-            // else {
-            //     debug!(
-            //         "find_corners - Founded {} corners - {:?}",
-            //         corners.len(),
-            //         corners
-            //     );
-            // }
-
             block_size += 20;
             if block_size > 90 {
                 break;
@@ -354,13 +304,7 @@ pub fn find_corners(center: &Point, phase: &Mat, contour: &[Point]) -> Result<Co
     let bl = mid[1].clone(); // max y-x
     let corners = vec![tl, tr, br, bl];
 
-    let hull = convex_hull_cv(contour)?;
-
-    Ok(CornerDetectResult {
-        corners,
-        hull,
-        quad: Vec::new(),
-    })
+    Ok(CornerDetectResult { corners })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -647,263 +591,6 @@ fn cumulative_perimeter(pts: &[Point]) -> Vec<f64> {
         dists.push(dists[i - 1] + d);
     }
     dists
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Debug image rendering — pure Rust, using the image crate
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Step 4 debug: contour outline (green polyline + red sample dots).
-fn render_step4_contour(original: &RgbImage, contour: &[Point]) -> RgbImage {
-    let mut img = original.clone();
-    let t = auto_thickness(&img);
-    let n = contour.len();
-    for i in 0..n {
-        let a = &contour[i];
-        let b = &contour[(i + 1) % n];
-        draw_thick_line(
-            &mut img,
-            a.x as i32,
-            a.y as i32,
-            b.x as i32,
-            b.y as i32,
-            Rgb([0u8, 255u8, 0u8]),
-            t,
-        );
-    }
-    for p in contour {
-        fill_circle(
-            &mut img,
-            p.x as i32,
-            p.y as i32,
-            (t * 2).max(3),
-            Rgb([255u8, 0u8, 0u8]),
-        );
-    }
-    img
-}
-
-/// Step 5 debug: bounding box (green) + centroid (red crosshair).
-fn render_step5_bbox_centroid(
-    original: &RgbImage,
-    bbox_x: u32,
-    bbox_y: u32,
-    bbox_w: u32,
-    bbox_h: u32,
-    centroid: &Point,
-) -> RgbImage {
-    let mut img = original.clone();
-    let t = auto_thickness(&img);
-    draw_rect_thick(
-        &mut img,
-        bbox_x as i32,
-        bbox_y as i32,
-        bbox_w as i32,
-        bbox_h as i32,
-        Rgb([0u8, 220u8, 0u8]),
-        t,
-    );
-    let r = t * 7;
-    fill_circle(
-        &mut img,
-        centroid.x as i32,
-        centroid.y as i32,
-        r,
-        Rgb([0u8, 0u8, 0u8]),
-    );
-    fill_circle(
-        &mut img,
-        centroid.x as i32,
-        centroid.y as i32,
-        r - t,
-        Rgb([255u8, 40u8, 40u8]),
-    );
-    draw_thick_line(
-        &mut img,
-        centroid.x as i32 - r,
-        centroid.y as i32,
-        centroid.x as i32 + r,
-        centroid.y as i32,
-        Rgb([255u8, 255u8, 255u8]),
-        (t / 2).max(1),
-    );
-    draw_thick_line(
-        &mut img,
-        centroid.x as i32,
-        centroid.y as i32 - r,
-        centroid.x as i32,
-        centroid.y as i32 + r,
-        Rgb([255u8, 255u8, 255u8]),
-        (t / 2).max(1),
-    );
-    img
-}
-
-/// Step 6 debug: convex hull (cyan), simplified quad (yellow), snapped corners (blue).
-fn render_step6_corners(
-    original: &RgbImage,
-    hull: &[Point],
-    quad: &[Point],
-    corners: &[Point],
-) -> RgbImage {
-    let mut img = original.clone();
-    let t = auto_thickness(&img);
-
-    // Convex hull — cyan thin polygon
-    for i in 0..hull.len() {
-        let a = &hull[i];
-        let b = &hull[(i + 1) % hull.len()];
-        draw_thick_line(
-            &mut img,
-            a.x as i32,
-            a.y as i32,
-            b.x as i32,
-            b.y as i32,
-            Rgb([0u8, 220u8, 220u8]),
-            t,
-        );
-    }
-
-    // Simplified quad — thick yellow polygon
-    for i in 0..quad.len() {
-        let a = &quad[i];
-        let b = &quad[(i + 1) % quad.len()];
-        draw_thick_line(
-            &mut img,
-            a.x as i32,
-            a.y as i32,
-            b.x as i32,
-            b.y as i32,
-            Rgb([255u8, 220u8, 0u8]),
-            t * 2,
-        );
-    }
-
-    // Snapped corners — blue dots with white outline
-    let r = t * 6;
-    for c in corners {
-        fill_circle(
-            &mut img,
-            c.x as i32,
-            c.y as i32,
-            r,
-            Rgb([255u8, 255u8, 255u8]),
-        );
-        fill_circle(
-            &mut img,
-            c.x as i32,
-            c.y as i32,
-            r - t,
-            Rgb([30u8, 80u8, 255u8]),
-        );
-    }
-    img
-}
-
-/// Step 7 debug: 4 sides in distinct colours, full contour in gray underneath.
-fn render_step7_sides(
-    original: &RgbImage,
-    sides: &[PieceSide],
-    contour: &[Point],
-    corners: &[Point],
-) -> RgbImage {
-    let mut img = original.clone();
-    let t = auto_thickness(&img);
-
-    // Full contour in gray as background reference
-    let n = contour.len();
-    for i in 0..n {
-        let a = &contour[i];
-        let b = &contour[(i + 1) % n];
-        draw_thick_line(
-            &mut img,
-            a.x as i32,
-            a.y as i32,
-            b.x as i32,
-            b.y as i32,
-            Rgb([120u8, 120u8, 120u8]),
-            t,
-        );
-    }
-
-    let side_colors: [Rgb<u8>; 4] = [
-        Rgb([255u8, 50u8, 50u8]),  // Side 1 top    — red
-        Rgb([50u8, 220u8, 50u8]),  // Side 2 right  — green
-        Rgb([50u8, 100u8, 255u8]), // Side 3 bottom — blue
-        Rgb([255u8, 160u8, 0u8]),  // Side 4 left   — orange
-    ];
-
-    for side in sides {
-        let color = side_colors[(side.index as usize - 1) % 4];
-        let r = t * 5;
-
-        draw_thick_line(
-            &mut img,
-            side.corner_a.x as i32,
-            side.corner_a.y as i32,
-            side.corner_b.x as i32,
-            side.corner_b.y as i32,
-            color,
-            t * 2,
-        );
-
-        // Corner A marker
-        fill_circle(
-            &mut img,
-            side.corner_a.x as i32,
-            side.corner_a.y as i32,
-            r,
-            Rgb([255u8, 255u8, 255u8]),
-        );
-        fill_circle(
-            &mut img,
-            side.corner_a.x as i32,
-            side.corner_a.y as i32,
-            r - t,
-            color,
-        );
-
-        // Corner B marker
-        fill_circle(
-            &mut img,
-            side.corner_b.x as i32,
-            side.corner_b.y as i32,
-            r,
-            Rgb([255u8, 255u8, 255u8]),
-        );
-        fill_circle(
-            &mut img,
-            side.corner_b.x as i32,
-            side.corner_b.y as i32,
-            r - t,
-            color,
-        );
-
-        // Midpoint dot
-        let mx = ((side.corner_a.x + side.corner_b.x) / 2.0) as i32;
-        let my = ((side.corner_a.y + side.corner_b.y) / 2.0) as i32;
-        fill_circle(&mut img, mx, my, t * 2, color);
-    }
-
-    // Large white corner markers
-    let r_big = t * 7;
-    for c in corners {
-        fill_circle(
-            &mut img,
-            c.x as i32,
-            c.y as i32,
-            r_big,
-            Rgb([0u8, 0u8, 0u8]),
-        );
-        fill_circle(
-            &mut img,
-            c.x as i32,
-            c.y as i32,
-            r_big - t,
-            Rgb([255u8, 255u8, 255u8]),
-        );
-    }
-    img
 }
 
 /// Derive a sensible stroke thickness from the image size.
