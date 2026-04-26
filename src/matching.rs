@@ -55,31 +55,36 @@ pub fn compute_matches(
                 continue;
             }
 
-            let score = compute_score(side_a, side_b, weights);
-            debug!(
-                "  {}-{} ↔ {}-{} : score={:.1}%",
-                pid_a, sidx_a, pid_b, sidx_b, score
-            );
+            let key_a = OutputMatches::side_key(pid_a, *sidx_a);
+            let key_b = OutputMatches::side_key(pid_b, *sidx_b);
+
+            let score = compute_score(side_a, side_b, weights, &key_a, &key_b);
+            debug!("  {} ↔ {} score={:.1}%", key_a, key_b, score);
 
             if score < threshold {
                 continue;
             }
 
-            let key_a = OutputMatches::side_key(pid_a, *sidx_a);
-            let key_b = OutputMatches::side_key(pid_b, *sidx_b);
-
-            result.matches.entry(key_a.clone()).or_default().push(SideMatch {
-                from_key: key_a.clone(),
-                to_key: key_b.clone(),
-                score,
-                rotation: rotation_for_sides(*sidx_a, *sidx_b),
-            });
-            result.matches.entry(key_b.clone()).or_default().push(SideMatch {
-                from_key: key_b.clone(),
-                to_key: key_a.clone(),
-                score,
-                rotation: rotation_for_sides(*sidx_b, *sidx_a),
-            });
+            result
+                .matches
+                .entry(key_a.clone())
+                .or_default()
+                .push(SideMatch {
+                    from_key: key_a.clone(),
+                    to_key: key_b.clone(),
+                    score,
+                    rotation: rotation_for_sides(*sidx_a, *sidx_b),
+                });
+            result
+                .matches
+                .entry(key_b.clone())
+                .or_default()
+                .push(SideMatch {
+                    from_key: key_b.clone(),
+                    to_key: key_a.clone(),
+                    score,
+                    rotation: rotation_for_sides(*sidx_b, *sidx_a),
+                });
         }
     }
 
@@ -90,7 +95,11 @@ pub fn compute_matches(
             matches.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
             info!(
                 "[{}] side {} ({}) — {} matches above {:.0}%",
-                pid, side_name(*sidx), side.side_type, matches.len(), threshold
+                pid,
+                side_name(*sidx),
+                side.side_type,
+                matches.len(),
+                threshold
             );
             for m in matches.iter() {
                 info!("    {}", m);
@@ -98,7 +107,10 @@ pub fn compute_matches(
         } else {
             info!(
                 "[{}] side {} ({}) — no matches above {:.0}%",
-                pid, side_name(*sidx), side.side_type, threshold
+                pid,
+                side_name(*sidx),
+                side.side_type,
+                threshold
             );
         }
     }
@@ -169,7 +181,11 @@ fn resample_profile(pts: &[(f64, f64)], n: usize) -> Vec<f64> {
     }
     (0..n)
         .map(|i| {
-            let t = if n <= 1 { 0.0 } else { i as f64 / (n - 1) as f64 };
+            let t = if n <= 1 {
+                0.0
+            } else {
+                i as f64 / (n - 1) as f64
+            };
             let idx = pts.partition_point(|x| x.0 < t);
             if idx == 0 {
                 pts[0].1
@@ -260,7 +276,7 @@ fn types_compatible(a: &SideType, b: &SideType) -> bool {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Compute a compatibility score [0..100] between two opposite-type sides.
-fn compute_score(a: &PieceSide, b: &PieceSide, w: &MatchWeights) -> f64 {
+fn compute_score(a: &PieceSide, b: &PieceSide, w: &MatchWeights, key_a: &str, key_b: &str) -> f64 {
     let ma = match &a.concavity {
         Some(m) => m,
         None => return 0.0,
@@ -271,37 +287,23 @@ fn compute_score(a: &PieceSide, b: &PieceSide, w: &MatchWeights) -> f64 {
     };
 
     // ── 1. Euclidean distance similarity ─────────────────────────────────────
-    // Compare: dist_to_corner_a of A  ↔  dist_to_corner_a of B  (and b side)
-    // We try both orderings (a↔a and a↔b) and take the better one,
-    // because the "corner_a" labelling might differ between pieces.
-    let eu_score = {
-        let s1 = similarity_ratio(ma.euclidean_dist_to_corner_a, mb.euclidean_dist_to_corner_a)
-            * similarity_ratio(ma.euclidean_dist_to_corner_b, mb.euclidean_dist_to_corner_b);
-        let s2 = similarity_ratio(ma.euclidean_dist_to_corner_a, mb.euclidean_dist_to_corner_b)
-            * similarity_ratio(ma.euclidean_dist_to_corner_b, mb.euclidean_dist_to_corner_a);
-        s1.max(s2)
-    };
+    // All sides are traversed clockwise (Top: L→R, Right: T→B, Bottom: R→L, Left: B→T).
+    // When two sides share a boundary they always travel in OPPOSITE directions,
+    // so corner_a of A always corresponds to corner_b of B (and vice versa).
+    let eu_score = similarity_ratio(ma.euclidean_dist_to_corner_a, mb.euclidean_dist_to_corner_b)
+        * similarity_ratio(ma.euclidean_dist_to_corner_b, mb.euclidean_dist_to_corner_a);
 
     // ── 2. Perimeter distance similarity ─────────────────────────────────────
-    let pe_score = {
-        let s1 = similarity_ratio(ma.perimeter_dist_to_corner_a, mb.perimeter_dist_to_corner_a)
-            * similarity_ratio(ma.perimeter_dist_to_corner_b, mb.perimeter_dist_to_corner_b);
-        let s2 = similarity_ratio(ma.perimeter_dist_to_corner_a, mb.perimeter_dist_to_corner_b)
-            * similarity_ratio(ma.perimeter_dist_to_corner_b, mb.perimeter_dist_to_corner_a);
-        s1.max(s2)
-    };
+    let pe_score = similarity_ratio(ma.perimeter_dist_to_corner_a, mb.perimeter_dist_to_corner_b)
+        * similarity_ratio(ma.perimeter_dist_to_corner_b, mb.perimeter_dist_to_corner_a);
 
     // ── 3. Depth similarity ───────────────────────────────────────────────────
     let depth_score = similarity_ratio(ma.depth, mb.depth);
 
     // ── 4. Apex position ratio similarity ────────────────────────────────────
-    // The tab of A should sit at the same relative position as the hole of B.
-    // Allow mirroring: pos_ratio ↔ (1 - pos_ratio)
-    let pos_score = {
-        let s1 = 1.0 - (ma.apex_position_ratio - mb.apex_position_ratio).abs();
-        let s2 = 1.0 - (ma.apex_position_ratio - (1.0 - mb.apex_position_ratio)).abs();
-        s1.max(s2).max(0.0)
-    };
+    // Because traversal directions are opposite, position r_a on A corresponds
+    // to position (1 - r_b) on B.
+    let pos_score = (1.0 - (ma.apex_position_ratio + mb.apex_position_ratio - 1.0).abs()).max(0.0);
 
     // ── 5. Area similarity ────────────────────────────────────────────────────
     let area_score = similarity_ratio(ma.area, mb.area);
@@ -321,9 +323,11 @@ fn compute_score(a: &PieceSide, b: &PieceSide, w: &MatchWeights) -> f64 {
             let pb = signed_profile(b, PROFILE_N);
             let (m1_diff, m2_diff) = contour_diffs(&pa, &pb);
 
+            let s1 = (1.0 - m1_diff / thr).clamp(0.0, 1.0);
+            let s2 = (1.0 - m2_diff / thr).clamp(0.0, 1.0);
             debug!(
-                "  contour m1={:.4} m2={:.4} thr={:.4}",
-                m1_diff, m2_diff, thr
+                "  {} ↔ {} contour m1={:.4} m2={:.4} thr={:.4} s1={:.4} s2={:.4}",
+                key_a, key_b, m1_diff, m2_diff, thr, s1, s2
             );
 
             // Hard gate: discard pair only if BOTH methods exceed threshold
@@ -331,11 +335,18 @@ fn compute_score(a: &PieceSide, b: &PieceSide, w: &MatchWeights) -> f64 {
                 return 0.0;
             }
 
-            let s1 = (1.0 - m1_diff / thr).clamp(0.0, 1.0);
-            let s2 = (1.0 - m2_diff / thr).clamp(0.0, 1.0);
             (s1, s2)
         }
     };
+
+    // ── 8. Baseline length similarity ────────────────────────────────────────
+    let baseline_len_a = a.corner_a.distance_to(&a.corner_b);
+    let baseline_len_b = b.corner_a.distance_to(&b.corner_b);
+    let baseline_score = similarity_ratio(baseline_len_a, baseline_len_b);
+    debug!(
+        "  {} ↔ {} baseline len_a={:.1} len_b={:.1} score={:.4} weight={}",
+        key_a, key_b, baseline_len_a, baseline_len_b, baseline_score, w.baseline_weight
+    );
 
     // ── Weighted combination ──────────────────────────────────────────────────
     let total_weight = w.euclidean_weight
@@ -344,15 +355,32 @@ fn compute_score(a: &PieceSide, b: &PieceSide, w: &MatchWeights) -> f64 {
         + w.position_weight
         + w.area_weight
         + w.contour_mean_weight
-        + w.contour_max_weight;
+        + w.contour_max_weight
+        + w.baseline_weight;
     let score = (eu_score * w.euclidean_weight
         + pe_score * w.perimeter_weight
         + depth_score * w.depth_weight
         + pos_score * w.position_weight
         + area_score * w.area_weight
         + contour_m1_score * w.contour_mean_weight
-        + contour_m2_score * w.contour_max_weight)
+        + contour_m2_score * w.contour_max_weight
+        + baseline_score * w.baseline_weight)
         / total_weight;
+
+    let c = |s: f64, wt: f64| s * wt / total_weight * 100.0;
+    debug!(
+        "  {} ↔ {} contrib eu={:.1}% pe={:.1}% depth={:.1}% pos={:.1}% area={:.1}% cm={:.1}% cx={:.1}% bl={:.1}% → tot={:.1}%",
+        key_a, key_b,
+        c(eu_score, w.euclidean_weight),
+        c(pe_score, w.perimeter_weight),
+        c(depth_score, w.depth_weight),
+        c(pos_score, w.position_weight),
+        c(area_score, w.area_weight),
+        c(contour_m1_score, w.contour_mean_weight),
+        c(contour_m2_score, w.contour_max_weight),
+        c(baseline_score, w.baseline_weight),
+        score * 100.0
+    );
 
     score * 100.0
 }
@@ -383,15 +411,27 @@ pub fn piece_id_from_key(key: &str) -> String {
 ///
 /// Ritorna true se almeno un lato di uno dei due pezzi conosce l'altro.
 pub fn apply_user_pair(output: &mut OutputMatches, piece_a: &str, piece_b: &str) -> bool {
-    let sides_a: Vec<String> = output.matches.keys()
+    let sides_a: Vec<String> = output
+        .matches
+        .keys()
         .filter(|k| piece_id_from_key(k) == piece_a)
-        .filter(|k| output.matches[*k].iter().any(|m| piece_id_from_key(&m.to_key) == piece_b))
+        .filter(|k| {
+            output.matches[*k]
+                .iter()
+                .any(|m| piece_id_from_key(&m.to_key) == piece_b)
+        })
         .cloned()
         .collect();
 
-    let sides_b: Vec<String> = output.matches.keys()
+    let sides_b: Vec<String> = output
+        .matches
+        .keys()
         .filter(|k| piece_id_from_key(k) == piece_b)
-        .filter(|k| output.matches[*k].iter().any(|m| piece_id_from_key(&m.to_key) == piece_a))
+        .filter(|k| {
+            output.matches[*k]
+                .iter()
+                .any(|m| piece_id_from_key(&m.to_key) == piece_a)
+        })
         .cloned()
         .collect();
 
@@ -404,7 +444,12 @@ pub fn apply_user_pair(output: &mut OutputMatches, piece_a: &str, piece_b: &str)
         if let Some(v) = output.matches.get_mut(&key) {
             v.retain(|m| piece_id_from_key(&m.to_key) == piece_b);
         }
-        if output.matches.get(&key).map(|v| v.is_empty()).unwrap_or(false) {
+        if output
+            .matches
+            .get(&key)
+            .map(|v| v.is_empty())
+            .unwrap_or(false)
+        {
             output.matches.remove(&key);
         }
     }
@@ -414,7 +459,12 @@ pub fn apply_user_pair(output: &mut OutputMatches, piece_a: &str, piece_b: &str)
         if let Some(v) = output.matches.get_mut(&key) {
             v.retain(|m| piece_id_from_key(&m.to_key) == piece_a);
         }
-        if output.matches.get(&key).map(|v| v.is_empty()).unwrap_or(false) {
+        if output
+            .matches
+            .get(&key)
+            .map(|v| v.is_empty())
+            .unwrap_or(false)
+        {
             output.matches.remove(&key);
         }
     }

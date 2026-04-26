@@ -1,171 +1,220 @@
-# Parametri di configurazione del Puzzle Solver
+# Puzzle Solver — Documentazione
 
-Tutti i parametri si passano da riga di comando **senza ricompilare**.  
-Formato generale:
+Analizza immagini di pezzi di puzzle, estrae descrittori geometrici per ogni lato e calcola quali lati di quali pezzi si collegano. I risultati vengono salvati in `output/output.json`.
+
+---
+
+## Build e avvio
+
+```bash
+cargo build --release
+
+puzzle --input ./input --output ./output --threshold 80
+```
+
+---
+
+## File prodotti
+
+| File | Descrizione |
+|------|-------------|
+| `output/output.json` | Tutti i match sopra soglia; ricalcolato ad ogni avvio |
+| `output/<id>.json` | Descrittore geometrico del singolo pezzo (cache: riusato se presente) |
+| `output/<id>.jpg` | Immagine di debug con angoli, lati e apici evidenziati |
+| `output/user.json` | Coppie confermate manualmente dall'utente; persiste tra le sessioni |
+| `output/puzzle.log` | Log completo dell'ultima esecuzione |
+
+---
+
+## Loop interattivo
+
+Al termine dell'analisi il programma entra in modalità interattiva (tasto `Esc` per uscire).
+
+### Ispezionare un pezzo
 
 ```
-puzzle --parametro VALORE [--altro-parametro VALORE ...]
+> 1
 ```
+
+Mostra tutti e 4 i lati del pezzo 1 con tipo (`Tab` / `Hole` / `Linear`) e i numeri dei pezzi candidati.
+
+**Leggenda dei numeri candidati:**
+
+| Stile | Significato |
+|-------|-------------|
+| normale | candidato generico |
+| **grassetto** | coppia confermata dall'utente (`user.json`) |
+| <u>sottolineato</u> | match mutuale — entrambi i lati si riconoscono a vicenda |
+| **<u>grassetto + sottolineato</u>** | confermato dall'utente e mutuale |
+
+### Confermare una coppia
+
+```
+> 1 2
+```
+
+Collega il pezzo 1 al pezzo 2 con la seguente logica:
+
+- **Pezzo 2 compare in un solo lato di pezzo 1** → le alternative per quel lato vengono eliminate; il lato resta con il solo pezzo 2 (e viceversa per pezzo 2 rispetto a pezzo 1).
+- **Pezzo 2 compare in più lati di pezzo 1** → nessuna eliminazione; il numero 2 viene evidenziato in grassetto.
+
+La coppia viene salvata in `user.json` e viene rielaborata automaticamente al prossimo avvio del programma.
 
 ---
 
 ## Come funziona il punteggio
 
 Il programma confronta coppie di lati (uno con tab, uno con hole) e calcola un **punteggio di compatibilità** da 0 a 100.  
-Il punteggio finale è una media pesata di sette componenti:
+Il punteggio finale è una media pesata di **otto componenti**:
 
 ```
-score = (eu * W_eu + pe * W_pe + de * W_de + po * W_po + ar * W_ar + cm * W_cm + cx * W_cx)
-      / (W_eu + W_pe + W_de + W_po + W_ar + W_cm + W_cx)
+score = (eu·W_eu + pe·W_pe + de·W_de + po·W_po + ar·W_ar
+       + cm·W_cm + cx·W_cx + bl·W_bl)
+      / (W_eu + W_pe + W_de + W_po + W_ar + W_cm + W_cx + W_bl)
 ```
 
-Solo i lati con `score >= threshold` compaiono nel file `output.json`.
+Solo i lati con `score >= threshold` compaiono in `output.json`.
+
+**Gate contorno:** se entrambi i metodi di confronto contorno (mean e max) superano `--contour-threshold`, la coppia viene scartata direttamente (score = 0) senza calcolare gli altri componenti.
 
 ---
 
-## `--threshold`
+## Parametri
 
-**Cosa fa:** soglia minima del punteggio finale (0–100) per includere una coppia di lati nell'output. Coppie con punteggio più basso vengono scartate silenziosamente.
+### `--input`
+Directory delle immagini dei pezzi.  
+**Default:** `input`
+
+### `--output`
+Directory per immagini di debug, descrittori JSON e file di output.  
+**Default:** `output`
+
+---
+
+### `--threshold`
+
+Soglia minima del punteggio finale (0–100) per includere una coppia nell'output. Coppie con punteggio più basso vengono scartate.
 
 **Default:** `80.0`
 
-**Come cambiarlo:**
 ```
 puzzle --threshold 85
 ```
 
-**Esempio:** con `--threshold 90` vengono tenute solo le coppie molto simili; abbassarlo a `70` include più candidati ma con più falsi positivi.
-
 ---
 
-## `--weight-euclidean`
+### `--weight-euclidean`
 
-**Cosa fa:** peso della **distanza euclidea** dell'apice della concavità dai due angoli del lato (corner_a e corner_b). Misura quanto le distanze geometriche dirette tab↔hole si assomigliano.
+Peso della **distanza euclidea** dell'apice dai due angoli del lato. Misura quanto le distanze geometriche tab↔hole si assomigliano. Il confronto è sempre incrociato (corner_a di A ↔ corner_b di B) perché i lati adiacenti percorrono il bordo in direzioni opposte.
 
 **Default:** `0.10`
 
-**Come cambiarlo:**
-```
-puzzle --weight-euclidean 0.30
-```
-
-**Esempio:** alzarlo a `0.30` rende il confronto più sensibile alla posizione spaziale dell'apice; utile se i pezzi sono fotografati sempre alla stessa scala.
-
 ---
 
-## `--weight-perimeter`
+### `--weight-perimeter`
 
-**Cosa fa:** peso della **distanza perimetrale** dell'apice lungo il bordo del pezzo (quanti pixel di contorno separano l'apice da ciascun angolo). Complementare alla distanza euclidea: cattura la forma del bordo tra apice e angolo.
+Peso della **distanza perimetrale** dell'apice lungo il bordo del pezzo. Cattura la forma del bordo tra apice e angolo, complementare alla distanza euclidea. Anche qui il confronto è incrociato (corner_a di A ↔ corner_b di B).
 
 **Default:** `0.10`
 
-**Come cambiarlo:**
-```
-puzzle --weight-perimeter 0.20
-```
-
-**Esempio:** alzarlo favorisce lati con percorso di bordo simile, indipendentemente da piccole variazioni angolari.
-
 ---
 
-## `--weight-depth`
+### `--weight-depth`
 
-**Cosa fa:** peso della **profondità della concavità** — la distanza perpendicolare massima tra l'apice e la retta che unisce i due angoli del lato. Tab e hole abbinati devono avere profondità simile.
+Peso della **profondità della concavità** — la distanza perpendicolare massima tra l'apice e la retta che unisce i due angoli. Tab e hole abbinati devono avere profondità simile.
 
 **Default:** `0.10`
 
-**Come cambiarlo:**
-```
-puzzle --weight-depth 0.25
-```
-
-**Esempio:** alzarlo è utile quando i pezzi hanno tab/hole di profondità molto diversa tra loro (puzzle con forme irregolari), perché penalizza di più le coppie con profondità incompatibili.
-
 ---
 
-## `--weight-position`
+### `--weight-position`
 
-**Cosa fa:** peso del **rapporto di posizione dell'apice** lungo la baseline — dove si trova l'apice tra i due angoli, espresso come valore 0.0 (vicino a corner_a) … 1.0 (vicino a corner_b). Viene confrontato anche nella versione speculare (1 − ratio) per gestire eventuali orientamenti ribaltati.
+Peso del **rapporto di posizione dell'apice** lungo la baseline (0.0 = vicino a corner_a, 1.0 = vicino a corner_b). La formula corretta è `1 − |r_A + r_B − 1|`: poiché i lati adiacenti sono percorsi in direzioni opposte, la posizione `r_A` su un lato corrisponde alla posizione `1 − r_B` sul lato opposto.
 
 **Default:** `0.10`
 
-**Come cambiarlo:**
-```
-puzzle --weight-position 0.20
-```
-
-**Esempio:** alzarlo è utile quando i tab sono molto asimmetrici (non centrati) e si vuole che due lati si abbinino solo se l'apice cade nella stessa zona relativa.
-
 ---
 
-## `--weight-area`
+### `--weight-area`
 
-**Cosa fa:** peso della **area della concavità** — l'area del poligono delimitato dal contorno del lato e dalla retta baseline tra i due angoli (formula di Shoelace). Tab e hole che si incastrano devono avere aree simili.
+Peso dell'**area della concavità** — l'area del poligono delimitato dal contorno del lato e dalla baseline (formula di Shoelace). Integra in un solo numero profondità e larghezza della concavità.
 
 **Default:** `0.50`
 
-**Come cambiarlo:**
-```
-puzzle --weight-area 0.30
-```
-
-**Esempio:** di default ha il peso maggiore perché l'area integra in un solo numero la profondità e la larghezza della concavità. Abbassarlo a `0.20` lo mette sullo stesso piano degli altri indicatori; alzarlo a `0.80` rende l'area quasi l'unico criterio decisivo.
-
 ---
 
-## `--weight-contour-mean`
+### `--weight-contour-mean`
 
-**Cosa fa:** peso del **Metodo 1** di confronto del profilo di contorno — la **media** di `|d_A[t] + d_B[t]|` su 100 punti equidistanti lungo la baseline. Il profilo `d[t]` è la distanza perpendicolare firmata (positiva = verso l'interno del pezzo) normalizzata per la lunghezza del lato. Per una coppia perfetta tab+hole la somma dovrebbe essere zero in ogni punto.
+Peso del **Metodo 1** di confronto del profilo di contorno: media di `|d_A[t] + d_B[t]|` su 100 punti equidistanti lungo la baseline. Il profilo `d[t]` è la distanza perpendicolare firmata normalizzata per la lunghezza del lato. Per una coppia perfetta tab+hole la somma dovrebbe essere zero in ogni punto.
 
 **Default:** `0.10`
 
-**Come cambiarlo:**
-```
-puzzle --weight-contour-mean 0.30
-```
-
-**Esempio:** alzarlo a `0.30` rende il punteggio molto sensibile alla forma complessiva del bordo; se due lati hanno profili complementari ma leggermente traslati, la media penalizza meno del massimo (vedi `--weight-contour-max`).
-
 ---
 
-## `--weight-contour-max`
+### `--weight-contour-max`
 
-**Cosa fa:** peso del **Metodo 2** di confronto del profilo di contorno — il **massimo** di `|d_A[t] + d_B[t]|` (distanza di Hausdorff monodimensionale). Rispetto alla media, è più severo: basta un singolo punto mal allineato per abbassare il punteggio.
+Peso del **Metodo 2** di confronto del profilo di contorno: massimo di `|d_A[t] + d_B[t]|` (distanza di Hausdorff monodimensionale). Più severo della media: basta un singolo punto mal allineato per abbassare il punteggio.
 
 **Default:** `0.10`
 
-**Come cambiarlo:**
-```
-puzzle --weight-contour-max 0.30
-```
+---
 
-**Esempio:** alzarlo a `0.30` scarta le coppie in cui anche solo una piccola zona del bordo non combacia; utile per puzzle con bordi molto precisi. Abbassarlo a `0.0` disabilita di fatto il Metodo 2 (resta solo il Metodo 1).
+### `--weight-baseline`
+
+Peso della **lunghezza della baseline** — la distanza retta tra i due angoli che delimitano il lato (corner_a → corner_b). Due lati che si incastrano fisicamente devono avere la stessa lunghezza; questo componente penalizza coppie di lati di dimensione molto diversa.
+
+**Default:** `0.10`
+
+```
+puzzle --weight-baseline 0.30
+```
 
 ---
 
-## `--contour-threshold`
+### `--contour-threshold`
 
-**Cosa fa:** soglia relativa per il **gate** del confronto contorno. Valore normalizzato rispetto alla lunghezza del lato (baseline): `0.15` significa che la differenza media/massima tra i profili non deve superare il 15% della lunghezza del lato. Se **entrambi** i metodi superano questa soglia, la coppia viene scartata prima ancora di calcolare il punteggio finale (ritorna 0).
+Soglia relativa per il **gate** del confronto contorno, normalizzata rispetto alla lunghezza del lato. Se **entrambi** Metodo 1 e Metodo 2 superano questa soglia, la coppia viene scartata prima di calcolare il punteggio finale.
 
 **Default:** `0.15`
 
-**Come cambiarlo:**
 ```
 puzzle --contour-threshold 0.10
 ```
 
-**Esempio:**  
-- `--contour-threshold 0.05` → gate molto stretto, scarta qualsiasi coppia con profili non quasi-perfetti; riduce i falsi positivi ma rischia di eliminare match reali se le foto sono leggermente distorte.  
-- `--contour-threshold 0.30` → gate largo, quasi nessuna coppia viene scartata dal gate; il confronto contorno contribuisce al punteggio ma non esclude nessuno.  
-- `--contour-threshold 0.0` → disabilita completamente il gate (nessuna coppia viene mai scartata per il profilo contorno).
+| Valore | Effetto |
+|--------|---------|
+| `0.05` | Gate stretto: scarta quasi tutto ciò che non è quasi-perfetto |
+| `0.15` | Bilanciato (default) |
+| `0.30` | Gate largo: quasi nessuna coppia viene scartata dal gate |
+| `0.0`  | Gate disabilitato |
+
+---
+
+### `--threads`
+
+Numero di thread per l'analisi parallela delle immagini. `0` usa tutti i core disponibili.
+
+**Default:** `0`
+
+```
+puzzle --threads 4
+```
+
+### `--log-level`
+
+Livello di dettaglio del log: `error` | `warn` | `info` | `debug` | `trace`.
+
+**Default:** `info`
+
+```
+puzzle --log-level debug
+```
 
 ---
 
 ## Esempio completo
 
-Eseguire con soglia alta, area molto importante e gate contorno stretto:
-
-```
+```bash
 puzzle \
   --input ./foto \
   --output ./risultati \
@@ -177,7 +226,8 @@ puzzle \
   --weight-area 0.50 \
   --weight-contour-mean 0.10 \
   --weight-contour-max 0.10 \
-  --contour-threshold 0.08
+  --weight-baseline 0.10 \
+  --contour-threshold 0.08 \
+  --threads 0 \
+  --log-level info
 ```
-
-In questo caso l'area della concavità vale il 50% del punteggio, e solo le coppie il cui profilo di bordo differisce meno dell'8% della lunghezza del lato vengono considerate.

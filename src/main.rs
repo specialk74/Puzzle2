@@ -63,6 +63,10 @@ struct Cli {
     #[arg(long, default_value_t = 0.10)]
     weight_contour_max: f64,
 
+    /// Weight for baseline length (corner_a ↔ corner_b) similarity (0..1)
+    #[arg(long, default_value_t = 0.10)]
+    weight_baseline: f64,
+
     /// Relative contour-matching threshold (0..1, normalized by baseline length)
     #[arg(long, default_value_t = 0.15)]
     contour_threshold: f64,
@@ -134,10 +138,10 @@ fn main() -> Result<()> {
     info!("Output directory : {}", cli.output.display());
     info!("Threshold        : {:.1}%", cli.threshold);
     info!(
-        "Weights — euclidean={} perimeter={} depth={} position={} area={} contour_mean={} contour_max={}",
+        "Weights — euclidean={} perimeter={} depth={} position={} area={} contour_mean={} contour_max={} baseline={}",
         cli.weight_euclidean, cli.weight_perimeter, cli.weight_depth,
         cli.weight_position, cli.weight_area,
-        cli.weight_contour_mean, cli.weight_contour_max
+        cli.weight_contour_mean, cli.weight_contour_max, cli.weight_baseline
     );
     info!("Contour threshold : {:.3}", cli.contour_threshold);
 
@@ -164,6 +168,7 @@ fn main() -> Result<()> {
         area_weight: cli.weight_area,
         contour_mean_weight: cli.weight_contour_mean,
         contour_max_weight: cli.weight_contour_max,
+        baseline_weight: cli.weight_baseline,
         contour_threshold: cli.contour_threshold,
     };
 

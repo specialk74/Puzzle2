@@ -190,6 +190,8 @@ pub struct MatchWeights {
     pub contour_mean_weight: f64,
     /// Weight for contour max-diff score (Method 2, Hausdorff)
     pub contour_max_weight: f64,
+    /// Weight for baseline length (corner_a ↔ corner_b) similarity
+    pub baseline_weight: f64,
     /// Relative threshold for contour gating (normalized by baseline_len)
     pub contour_threshold: f64,
 }
@@ -204,6 +206,7 @@ impl Default for MatchWeights {
             area_weight: 0.20,
             contour_mean_weight: 0.20,
             contour_max_weight: 0.20,
+            baseline_weight: 0.10,
             contour_threshold: 0.15,
         }
     }
